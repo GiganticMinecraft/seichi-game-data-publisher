@@ -5,11 +5,11 @@ on:
       - '**.md'
 
 env:
-  TRANSLATOR_IMAGE: ghcr.io/giganticminecraft/seichi-timed-stats-publisher
+  image_name: ghcr.io/giganticminecraft/seichi-timed-stats-publisher
 
 jobs:
   lint-and-test:
-    name: Lint and test translator
+    name: Lint and test server
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -53,13 +53,13 @@ jobs:
           args: --manifest-path server/Cargo.toml --all-features
 
   build-image:
-    name: Build translator docker image (and publish on master)
-    needs: [ translator-lint-and-test ]
+    name: Build server docker image (and publish on master)
+    needs: [ lint-and-test ]
     runs-on: ubuntu-20.04
     outputs:
       image_tag: ${{ steps.meta.outputs.tags }}
     concurrency:
-      group: ${{ github.ref }}-docker-build-translator
+      group: ${{ github.ref }}-docker-build
       cancel-in-progress: true
     steps:
       - name: checkout
@@ -80,7 +80,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v4
         with:
-          images: ${{ env.TRANSLATOR_IMAGE }}
+          images: ${{ env.image_name }}
           tags: |
             type=sha,prefix=sha-,suffix=,format=short
 
