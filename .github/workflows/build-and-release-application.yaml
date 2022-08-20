@@ -5,10 +5,10 @@ on:
       - '**.md'
 
 env:
-  TRANSLATOR_IMAGE: ghcr.io/giganticminecraft/seichi-timed-stats-translator
+  TRANSLATOR_IMAGE: ghcr.io/giganticminecraft/seichi-timed-stats-publisher
 
 jobs:
-  translator-lint-and-test:
+  lint-and-test:
     name: Lint and test translator
     runs-on: ubuntu-latest
     steps:
@@ -26,6 +26,8 @@ jobs:
       # > before the plugin, as it uses the current rustc version as its cache key
       # https://github.com/Swatinem/rust-cache/tree/cb2cf0cc7c5198d3364b9630e2c3d457f160790c#example-usage
       - uses: Swatinem/rust-cache@v1
+        with:
+          working-directory: server/
 
       # buf CLIがビルドに必要
       - uses: bufbuild/buf-setup-action@v1
@@ -36,21 +38,21 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --all -- --check
+          args: --manifest-path server/Cargo.toml --all -- --check
 
       - name: Cargo clippy
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --manifest-path Cargo.toml
+          args: --manifest-path server/Cargo.toml
 
       - name: Cargo test
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-features
+          args: --manifest-path server/Cargo.toml --all-features
 
-  translator_build_image:
+  build-image:
     name: Build translator docker image (and publish on master)
     needs: [ translator-lint-and-test ]
     runs-on: ubuntu-20.04
@@ -86,7 +88,7 @@ jobs:
         id: docker_build
         uses: docker/build-push-action@v3
         with:
-          context: ./
+          context: ./server
           file: ./Dockerfile
           builder: ${{ steps.buildx.outputs.name }}
           push: ${{ github.ref == 'refs/heads/master' }}
