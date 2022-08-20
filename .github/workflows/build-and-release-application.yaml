@@ -1,0 +1,226 @@
+name: CI
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+
+env:
+  READER_IMAGE: ghcr.io/giganticminecraft/seichi-timed-stats-reader
+  TRANSLATOR_IMAGE: ghcr.io/giganticminecraft/seichi-timed-stats-translator
+
+jobs:
+  reader-lint-and-test:
+    name: Lint and test reader
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          # TODO: read from rust-toolchain.toml
+          toolchain: "1.62.1"
+          profile: "default"
+
+      # > selecting a toolchain either by action or manual `rustup` calls should happen
+      # > before the plugin, as it uses the current rustc version as its cache key
+      # https://github.com/Swatinem/rust-cache/tree/cb2cf0cc7c5198d3364b9630e2c3d457f160790c#example-usage
+      - uses: Swatinem/rust-cache@v1
+        with:
+          working-directory: servers/reader
+
+      # buf CLIがビルドに必要
+      - uses: bufbuild/buf-setup-action@v1
+
+      # GitHubのUIにエラー/警告を表示してくれるので actions-rs/cargo を利用している
+
+      - name: Cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --manifest-path servers/reader/Cargo.toml --all -- --check
+
+      - name: Cargo clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --manifest-path servers/reader/Cargo.toml
+
+      - name: Cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path servers/reader/Cargo.toml --all-features
+
+  reader_build_image:
+    name: Build reader docker image (and publish on master)
+    needs: [ reader-lint-and-test ]
+    runs-on: ubuntu-20.04
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    concurrency:
+      group: ${{ github.ref }}-docker-build-reader
+      cancel-in-progress: true
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.READER_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,suffix=,format=short
+
+      - name: Build (and push if on master)
+        id: docker_build
+        uses: docker/build-push-action@v3
+        with:
+          context: ./servers/reader
+          file: ./servers/reader/Dockerfile
+          builder: ${{ steps.buildx.outputs.name }}
+          push: ${{ github.ref == 'refs/heads/master' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          # すべてのビルドステージのすべてのレイヤーをキャッシュして欲しいのでmode=max
+          cache-to: type=gha,mode=max
+
+  translator-lint-and-test:
+    name: Lint and test translator
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          # TODO: read from rust-toolchain.toml
+          toolchain: "1.62.1"
+          profile: "default"
+
+      # > selecting a toolchain either by action or manual `rustup` calls should happen
+      # > before the plugin, as it uses the current rustc version as its cache key
+      # https://github.com/Swatinem/rust-cache/tree/cb2cf0cc7c5198d3364b9630e2c3d457f160790c#example-usage
+      - uses: Swatinem/rust-cache@v1
+        with:
+          working-directory: servers/translator
+
+      # buf CLIがビルドに必要
+      - uses: bufbuild/buf-setup-action@v1
+
+      # GitHubのUIにエラー/警告を表示してくれるので actions-rs/cargo を利用している
+
+      - name: Cargo fmt
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --manifest-path servers/translator/Cargo.toml --all -- --check
+
+      - name: Cargo clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+          args: --manifest-path servers/translator/Cargo.toml
+
+      - name: Cargo test
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --manifest-path servers/translator/Cargo.toml --all-features
+
+  translator_build_image:
+    name: Build translator docker image (and publish on master)
+    needs: [ translator-lint-and-test ]
+    runs-on: ubuntu-20.04
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    concurrency:
+      group: ${{ github.ref }}-docker-build-translator
+      cancel-in-progress: true
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.TRANSLATOR_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-,suffix=,format=short
+
+      - name: Build (and push if on master)
+        id: docker_build
+        uses: docker/build-push-action@v3
+        with:
+          context: ./servers/translator
+          file: ./servers/translator/Dockerfile
+          builder: ${{ steps.buildx.outputs.name }}
+          push: ${{ github.ref == 'refs/heads/master' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          # すべてのビルドステージのすべてのレイヤーをキャッシュして欲しいのでmode=max
+          cache-to: type=gha,mode=max
+
+  update-kubernetes-image-tags:
+    name: Updates Kubernetes image tags
+    needs: [ reader_build_image, translator_build_image ]
+    runs-on: ubuntu-22.04
+    concurrency:
+      group: "update-kubernetes-image-tags"
+    if: ${{ github.ref == 'refs/heads/master' }}
+    steps:
+      - name: checkout
+        uses: actions/checkout@v3
+
+      - name: Replace reader tag
+        run: |
+          sed -ri \
+              "s%image: ghcr\.io/giganticminecraft/seichi-timed-stats-reader:sha-\w+%image: ${READER_TAG}%g" \
+              ./kubernetes/reader.yaml
+        env:
+          # comma-separated list of [image name]:[tag], but docker-meta is only generating one tag (sha)
+          READER_TAG: ${{ needs.reader_build_image.outputs.image_tag }}
+
+      - name: Replace translator tag
+        run: |
+          sed -ri \
+              "s%image: ghcr\.io/giganticminecraft/seichi-timed-stats-translator:sha-\w+%image: ${TRANSLATOR_TAG}%g" \
+              ./kubernetes/translator.yaml
+        env:
+          # comma-separated list of [image name]:[tag], but docker-meta is only generating one tag (sha)
+          TRANSLATOR_TAG: ${{ needs.translator_build_image.outputs.image_tag }}
+
+      - name: Commit & Push changes
+        uses: actions-js/push@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: "master"
+          message: "chore(kubernetes): update server components' image tags"
