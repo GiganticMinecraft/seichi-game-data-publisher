@@ -231,18 +231,18 @@ mod infra_axum_handlers {
 
 mod infra_repository_impls {
     #[allow(dead_code)]
-    #[allow(clippy::nursery, clippy::pedantic)]
+    #[allow(clippy::nursery, clippy::pedantic, clippy::all)]
     mod buf_generated {
         include!("gen/mod.rs");
     }
 
     pub mod config {
         #[derive(serde::Deserialize, Debug, Clone)]
-        pub struct GrpcClientConfig {
+        pub struct GrpcClient {
             pub game_data_server_grpc_endpoint_url: String,
         }
 
-        impl GrpcClientConfig {
+        impl GrpcClient {
             pub fn from_env() -> anyhow::Result<Self> {
                 Ok(envy::from_env::<Self>()?)
             }
@@ -321,7 +321,7 @@ mod infra_repository_impls {
     impl GameDataGrpcRepository {
         #[tracing::instrument]
         pub async fn initialize_connections_with(
-            config: config::GrpcClientConfig,
+            config: config::GrpcClient,
         ) -> anyhow::Result<Self> {
             let client =
                 GameDataGrpcClient::connect(config.game_data_server_grpc_endpoint_url).await?;
@@ -417,7 +417,7 @@ mod app {
 
         let shared_state = {
             let repository = {
-                let client_config = infra_repository_impls::config::GrpcClientConfig::from_env()?;
+                let client_config = infra_repository_impls::config::GrpcClient::from_env()?;
                 let repository =
                     infra_repository_impls::GameDataGrpcRepository::initialize_connections_with(
                         client_config,
