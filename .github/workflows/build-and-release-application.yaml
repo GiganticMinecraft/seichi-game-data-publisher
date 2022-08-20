@@ -26,8 +26,6 @@ jobs:
       # > before the plugin, as it uses the current rustc version as its cache key
       # https://github.com/Swatinem/rust-cache/tree/cb2cf0cc7c5198d3364b9630e2c3d457f160790c#example-usage
       - uses: Swatinem/rust-cache@v1
-        with:
-          working-directory: servers/translator
 
       # buf CLIがビルドに必要
       - uses: bufbuild/buf-setup-action@v1
@@ -38,19 +36,19 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: fmt
-          args: --manifest-path servers/translator/Cargo.toml --all -- --check
+          args: --all -- --check
 
       - name: Cargo clippy
         uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --manifest-path servers/translator/Cargo.toml
+          args: --manifest-path Cargo.toml
 
       - name: Cargo test
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --manifest-path servers/translator/Cargo.toml --all-features
+          args: --all-features
 
   translator_build_image:
     name: Build translator docker image (and publish on master)
@@ -88,8 +86,8 @@ jobs:
         id: docker_build
         uses: docker/build-push-action@v3
         with:
-          context: ./servers/translator
-          file: ./servers/translator/Dockerfile
+          context: ./
+          file: ./Dockerfile
           builder: ${{ steps.buildx.outputs.name }}
           push: ${{ github.ref == 'refs/heads/master' }}
           tags: ${{ steps.meta.outputs.tags }}
