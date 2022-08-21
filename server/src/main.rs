@@ -182,7 +182,7 @@ mod infra_axum_handlers {
 
             for (player, data) in &data.0 {
                 write_record(&mut result, player, "break_count", data.break_count)?;
-                write_record(&mut result, player, "build_c  ount", data.build_count)?;
+                write_record(&mut result, player, "build_count", data.build_count)?;
                 write_record(&mut result, player, "play_ticks", data.play_ticks)?;
                 write_record(&mut result, player, "vote_count", data.vote_count)?;
             }
