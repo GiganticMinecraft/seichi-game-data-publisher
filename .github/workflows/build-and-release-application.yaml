@@ -5,7 +5,7 @@ on:
       - '**.md'
 
 env:
-  image_name: ghcr.io/giganticminecraft/seichi-timed-stats-publisher
+  image_name: ghcr.io/giganticminecraft/seichi-game-data-publisher
 
 jobs:
   lint-and-test:
