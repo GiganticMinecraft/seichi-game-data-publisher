@@ -15,12 +15,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # reads toolchain info from /rust-toolchain.toml
+      # we are using a fork of actions-rs/toolchain for rust-toolchain.toml support
+      # (see https://github.com/actions-rs/toolchain/pull/209) for details.
       - name: Setup Rust toolchain
-        uses: actions-rs/toolchain@v1
-        with:
-          # TODO: read from rust-toolchain.toml
-          toolchain: "1.62.1"
-          profile: "default"
+        uses: oxidecomputer/actions-rs_toolchain@v1
 
       # > selecting a toolchain either by action or manual `rustup` calls should happen
       # > before the plugin, as it uses the current rustc version as its cache key
