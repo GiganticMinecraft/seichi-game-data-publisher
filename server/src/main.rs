@@ -135,6 +135,7 @@ mod infra_axum_handlers {
     use crate::domain::PlayerDataRepository;
     use crate::use_cases::GetAllPlayerDataUseCase;
     use axum::body;
+    use axum::extract::State;
     use axum::handler::Handler;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
@@ -199,7 +200,7 @@ mod infra_axum_handlers {
         )
     }
 
-    pub fn handle_get_metrics(state: SharedAppState) -> impl Handler<()> {
+    pub fn handle_get_metrics(State(state): State<SharedAppState>) -> impl Handler<()> {
         // we need a separate handler function to create an error tracing span
         #[tracing::instrument]
         async fn handler(state: &SharedAppState) -> Response {
@@ -437,7 +438,8 @@ mod app {
             use axum::Router;
 
             Router::new()
-                .route("/metrics", get(handle_get_metrics(shared_state.clone())))
+                .route("/metrics", get(handle_get_metrics))
+                .with_state(shared_state.clone())
                 .layer(TraceLayer::new_for_http())
         };
 
