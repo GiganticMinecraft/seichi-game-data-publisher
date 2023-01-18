@@ -200,9 +200,7 @@ mod infra_axum_handlers {
         )
     }
 
-    pub fn handle_get_metrics(
-        State(state): State<SharedAppState>,
-    ) -> impl Handler<_, SharedAppState, ()> {
+    pub fn handle_get_metrics(State(state): State<SharedAppState>) -> () {
         // we need a separate handler function to create an error tracing span
         #[tracing::instrument]
         async fn handler(state: &SharedAppState) -> Response {
