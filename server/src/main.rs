@@ -136,6 +136,7 @@ mod infra_axum_handlers {
     use crate::use_cases::GetAllPlayerDataUseCase;
     use axum::body;
     use axum::body::Body;
+    use axum::extract::State;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, MethodRouter};
@@ -202,10 +203,10 @@ mod infra_axum_handlers {
     }
 
     /// Handler for the `GET /metrics` endpoint.
-    pub fn route_get_metrics(state: SharedAppState) -> MethodRouter<(), Body, Infallible> {
+    pub fn handle_get_metrics() -> MethodRouter<SharedAppState, Body, Infallible> {
         // we need a separate handler function to create an error tracing span
         #[tracing::instrument]
-        async fn handler(state: &SharedAppState) -> Response {
+        async fn handle_request(state: &SharedAppState) -> Response {
             let use_case = GetAllPlayerDataUseCase {
                 repository: state.repository.clone(),
             };
@@ -228,7 +229,7 @@ mod infra_axum_handlers {
             }
         }
 
-        get(|| async move { handler(&state).await })
+        get(|State(s): State<SharedAppState>| async move { handle_request(&s).await })
     }
 }
 
@@ -420,36 +421,28 @@ mod app {
             .init();
 
         let shared_state = {
-            let repository = {
-                let client_config = infra_repository_impls::config::GrpcClient::from_env()?;
-                let repository =
-                    infra_repository_impls::GameDataGrpcRepository::initialize_connections_with(
-                        client_config,
-                    )
-                    .await?;
+            let client_config = infra_repository_impls::config::GrpcClient::from_env()?;
+            let repository =
+                infra_repository_impls::GameDataGrpcRepository::initialize_connections_with(
+                    client_config,
+                )
+                .await?;
 
-                Arc::new(repository)
-            };
-
-            SharedAppState { repository }
+            SharedAppState {
+                repository: Arc::new(repository),
+            }
         };
 
-        let app: Router = Router::new()
-            .route(
-                "/metrics",
-                infra_axum_handlers::route_get_metrics(shared_state.clone()),
-            )
-            .layer(TraceLayer::new_for_http());
+        let routes: Router = Router::new()
+            .route("/metrics", infra_axum_handlers::handle_get_metrics())
+            .layer(TraceLayer::new_for_http())
+            .with_state(shared_state.clone());
 
-        let addr = {
-            use std::net::SocketAddr;
-            SocketAddr::from(([0, 0, 0, 0], 80))
-        };
-
+        let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 80));
         tracing::info!("listening on {}", addr);
 
         Ok(axum::Server::bind(&addr)
-            .serve(app.into_make_service())
+            .serve(routes.into_make_service())
             .await?)
     }
 }
