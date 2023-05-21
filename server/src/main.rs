@@ -135,9 +135,11 @@ mod infra_axum_handlers {
     use crate::domain::PlayerDataRepository;
     use crate::use_cases::GetAllPlayerDataUseCase;
     use axum::body;
-    use axum::handler::Handler;
+    use axum::body::Body;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
+    use axum::routing::{get, MethodRouter};
+    use std::convert::Infallible;
     use std::sync::Arc;
 
     #[derive(Clone, Debug)]
@@ -199,7 +201,8 @@ mod infra_axum_handlers {
         )
     }
 
-    pub fn handle_get_metrics(state: SharedAppState) -> impl Handler<()> {
+    /// Handler for the `GET /metrics` endpoint.
+    pub fn route_get_metrics(state: SharedAppState) -> MethodRouter<(), Body, Infallible> {
         // we need a separate handler function to create an error tracing span
         #[tracing::instrument]
         async fn handler(state: &SharedAppState) -> Response {
@@ -225,7 +228,7 @@ mod infra_axum_handlers {
             }
         }
 
-        || async move { handler(&state).await }
+        get(|| async move { handler(&state).await })
     }
 }
 
@@ -400,6 +403,7 @@ mod app {
     use crate::infra_axum_handlers;
     use crate::infra_axum_handlers::SharedAppState;
     use crate::infra_repository_impls;
+    use axum::Router;
     use std::sync::Arc;
     use tower_http::trace::TraceLayer;
     use tracing_subscriber::layer::SubscriberExt;
@@ -430,16 +434,12 @@ mod app {
             SharedAppState { repository }
         };
 
-        let app = {
-            use infra_axum_handlers::handle_get_metrics;
-
-            use axum::routing::get;
-            use axum::Router;
-
-            Router::new()
-                .route("/metrics", get(handle_get_metrics(shared_state.clone())))
-                .layer(TraceLayer::new_for_http())
-        };
+        let app: Router = Router::new()
+            .route(
+                "/metrics",
+                infra_axum_handlers::route_get_metrics(shared_state.clone()),
+            )
+            .layer(TraceLayer::new_for_http());
 
         let addr = {
             use std::net::SocketAddr;
