@@ -14,6 +14,6 @@ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 tracing = "0.1.37"
 anyhow = "1.0.72"
 envy = "0.4.2"
-serde = "1.0.174"
+serde = "1.0.175"
 tower-http = { version = "0.4.0", features = ["trace"] }
 indexmap = "1.9.3"
