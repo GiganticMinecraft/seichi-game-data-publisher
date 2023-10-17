@@ -60,7 +60,7 @@ jobs:
   build-image:
     name: Build server docker image (and publish on master)
     needs: [ lint-and-test ]
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     outputs:
       image_tag: ${{ steps.meta.outputs.tags }}
     concurrency:
