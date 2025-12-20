@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# pbjson-types, prost, tonic, tonic-prost は `<= 1.0.0` の範囲でminor versionが上がった場合全て一緒にbumpすること。buf.gen.yamlの
+# バージョンをあげることも忘れずに。
+
 axum = "0.8.0"
 async-trait = "0.1.68"
 pbjson-types = "0.9.0"
