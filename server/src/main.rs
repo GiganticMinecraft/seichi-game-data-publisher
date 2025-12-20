@@ -1,5 +1,5 @@
-#![deny(clippy::all, clippy::cargo)]
-#![warn(clippy::nursery, clippy::pedantic)]
+#![deny(clippy::all)]
+#![warn(clippy::nursery, clippy::pedantic, clippy::cargo)]
 #![allow(clippy::cargo_common_metadata)]
 
 mod domain {
@@ -13,7 +13,7 @@ mod domain {
     pub struct PlayerUuidString([u8; 36]);
 
     impl PlayerUuidString {
-        pub fn as_str(&self) -> Result<&str, Utf8Error> {
+        pub const fn as_str(&self) -> Result<&str, Utf8Error> {
             std::str::from_utf8(&self.0)
         }
 
@@ -107,22 +107,22 @@ mod use_cases {
                 IndexMap::with_capacity(break_counts.len());
 
             for break_count in break_counts {
-                let mut entry = result_map.entry(break_count.player).or_default();
+                let entry = result_map.entry(break_count.player).or_default();
                 entry.break_count = break_count.break_count;
             }
 
             for build_count in build_counts {
-                let mut entry = result_map.entry(build_count.player).or_default();
+                let entry = result_map.entry(build_count.player).or_default();
                 entry.build_count = build_count.build_count;
             }
 
             for tick_count in play_ticks {
-                let mut entry = result_map.entry(tick_count.player).or_default();
+                let entry = result_map.entry(tick_count.player).or_default();
                 entry.play_ticks = tick_count.play_ticks;
             }
 
             for vote_count in vote_counts {
-                let mut entry = result_map.entry(vote_count.player).or_default();
+                let entry = result_map.entry(vote_count.player).or_default();
                 entry.vote_count = vote_count.vote_count;
             }
 
