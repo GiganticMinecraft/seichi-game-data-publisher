@@ -11,8 +11,6 @@ fn process_status(status: ExitStatus) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Temporarily disabled due to buf.build rate limiting
-    // The generated files already exist in src/gen/
     process_status(
         Command::new("buf")
             .arg("generate")
