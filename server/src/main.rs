@@ -215,9 +215,7 @@ mod infra_axum_handlers {
                         &known_aggregated_player_data,
                     )
                 }) {
-                Ok(metrics_presentation) => {
-                    (StatusCode::OK, metrics_presentation).into_response()
-                }
+                Ok(metrics_presentation) => (StatusCode::OK, metrics_presentation).into_response(),
                 Err(e) => {
                     tracing::error!("{:?}", e);
                     const_error_response().into_response()
