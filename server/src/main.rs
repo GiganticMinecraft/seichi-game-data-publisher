@@ -429,8 +429,8 @@ mod app {
 
         let routes: Router = Router::new()
             .route("/metrics", infra_axum_handlers::handle_get_metrics())
-            .with_state(shared_state.clone())
-            .layer(TraceLayer::new_for_http());
+            .layer(TraceLayer::new_for_http())
+            .with_state(shared_state.clone());
 
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 80));
         tracing::info!("listening on {}", addr);
