@@ -134,13 +134,10 @@ mod use_cases {
 mod infra_axum_handlers {
     use crate::domain::PlayerDataRepository;
     use crate::use_cases::GetAllPlayerDataUseCase;
-    use axum::body;
-    use axum::body::Body;
     use axum::extract::State;
     use axum::http::StatusCode;
     use axum::response::{IntoResponse, Response};
     use axum::routing::{get, MethodRouter};
-    use std::convert::Infallible;
     use std::sync::Arc;
 
     #[derive(Clone, Debug)]
@@ -194,16 +191,15 @@ mod infra_axum_handlers {
         }
     }
 
-    fn const_error_response() -> (StatusCode, Response) {
+    fn const_error_response() -> (StatusCode, String) {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Response::new(
-                body::boxed("Encountered internal server error. Please contact the server administrator to resolve the issue.".to_string())),
+            "Encountered internal server error. Please contact the server administrator to resolve the issue.".to_string(),
         )
     }
 
     /// Handler for the `GET /metrics` endpoint.
-    pub fn handle_get_metrics() -> MethodRouter<SharedAppState, Body, Infallible> {
+    pub fn handle_get_metrics() -> MethodRouter<SharedAppState> {
         // we need a separate handler function to create an error tracing span
         #[tracing::instrument]
         async fn handle_request(state: &SharedAppState) -> Response {
@@ -219,9 +215,7 @@ mod infra_axum_handlers {
                         &known_aggregated_player_data,
                     )
                 }) {
-                Ok(metrics_presentation) => {
-                    (StatusCode::OK, Response::new(metrics_presentation)).into_response()
-                }
+                Ok(metrics_presentation) => (StatusCode::OK, metrics_presentation).into_response(),
                 Err(e) => {
                     tracing::error!("{:?}", e);
                     const_error_response().into_response()
@@ -441,9 +435,8 @@ mod app {
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 80));
         tracing::info!("listening on {}", addr);
 
-        Ok(axum::Server::bind(&addr)
-            .serve(routes.into_make_service())
-            .await?)
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        Ok(axum::serve(listener, routes).await?)
     }
 }
 
