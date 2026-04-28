@@ -258,7 +258,6 @@ mod infra_repository_impls {
             })
         }
 
-        #[tracing::instrument]
         fn extract_domain_player(
             player: Option<generated::Player>,
         ) -> anyhow::Result<domain::Player> {
@@ -267,7 +266,6 @@ mod infra_repository_impls {
             into_domain_player(&player)
         }
 
-        #[tracing::instrument]
         pub fn try_into_domain_player_break_count(
             value: generated::PlayerBreakCount,
         ) -> anyhow::Result<domain::PlayerBreakCount> {
@@ -277,7 +275,6 @@ mod infra_repository_impls {
             })
         }
 
-        #[tracing::instrument]
         pub fn try_into_domain_player_build_count(
             value: generated::PlayerBuildCount,
         ) -> anyhow::Result<domain::PlayerBuildCount> {
@@ -287,7 +284,6 @@ mod infra_repository_impls {
             })
         }
 
-        #[tracing::instrument]
         pub fn try_into_domain_player_play_ticks(
             value: generated::PlayerPlayTicks,
         ) -> anyhow::Result<domain::PlayerPlayTicks> {
@@ -297,7 +293,6 @@ mod infra_repository_impls {
             })
         }
 
-        #[tracing::instrument]
         pub fn try_into_domain_player_vote_count(
             value: generated::PlayerVoteCount,
         ) -> anyhow::Result<domain::PlayerVoteCount> {
