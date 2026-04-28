@@ -326,11 +326,10 @@ mod infra_repository_impls {
             // Build the channel manually so we can wrap it with the OTel gRPC
             // layer; the layer injects the W3C trace context into outgoing
             // requests and creates a span per RPC call.
-            let channel = tonic::transport::Channel::from_shared(
-                config.game_data_server_grpc_endpoint_url,
-            )?
-            .connect()
-            .await?;
+            let channel =
+                tonic::transport::Channel::from_shared(config.game_data_server_grpc_endpoint_url)?
+                    .connect()
+                    .await?;
             let channel = OtelGrpcLayer.layer(channel);
 
             Ok(Self {
@@ -411,7 +410,7 @@ mod infra_repository_impls {
 // alive. Disabled at runtime when `PYROSCOPE_SERVER_ADDRESS` is not set so the
 // binary remains usable in environments without a profiler endpoint.
 mod profiler {
-    use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
+    use pyroscope::backend::{pprof_backend, BackendConfig, PprofConfig};
     use pyroscope::pyroscope::PyroscopeAgentBuilder;
 
     pub struct Guard {
