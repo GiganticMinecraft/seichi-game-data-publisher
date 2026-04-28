@@ -21,3 +21,13 @@ envy = "0.4.2"
 serde = "1.0.198"
 tower-http = { version = "0.6.0", features = ["trace"] }
 indexmap = "2.0.0"
+
+# Observability stack. Configured at runtime through OTEL_* / PYROSCOPE_*
+# environment variables; if unset, the exporters stay disabled and the binary
+# falls back to plain stdout logging.
+init-tracing-opentelemetry = { version = "0.37", features = ["otlp", "tracing_subscriber_ext", "tracer", "metrics", "logs", "tls-webpki-roots"] }
+axum-tracing-opentelemetry = "0.33"
+tonic-tracing-opentelemetry = "0.32"
+opentelemetry = "0.31"
+tower = "0.5"
+pyroscope = { version = "2.0", features = ["backend-pprof-rs"] }

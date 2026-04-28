@@ -309,7 +309,9 @@ mod infra_repository_impls {
     }
 
     use buf_generated::gigantic_minecraft::seichi_game_data::v1::read_service_client::ReadServiceClient;
-    type GameDataGrpcClient = ReadServiceClient<tonic::transport::Channel>;
+    use tonic_tracing_opentelemetry::middleware::client::{OtelGrpcLayer, OtelGrpcService};
+    use tower::Layer;
+    type GameDataGrpcClient = ReadServiceClient<OtelGrpcService<tonic::transport::Channel>>;
 
     #[derive(Debug)]
     pub struct GameDataGrpcRepository {
@@ -321,10 +323,19 @@ mod infra_repository_impls {
         pub async fn initialize_connections_with(
             config: config::GrpcClient,
         ) -> anyhow::Result<Self> {
-            let client =
-                GameDataGrpcClient::connect(config.game_data_server_grpc_endpoint_url).await?;
+            // Build the channel manually so we can wrap it with the OTel gRPC
+            // layer; the layer injects the W3C trace context into outgoing
+            // requests and creates a span per RPC call.
+            let channel = tonic::transport::Channel::from_shared(
+                config.game_data_server_grpc_endpoint_url,
+            )?
+            .connect()
+            .await?;
+            let channel = OtelGrpcLayer.layer(channel);
 
-            Ok(Self { client })
+            Ok(Self {
+                client: ReadServiceClient::new(channel),
+            })
         }
 
         pub(crate) fn game_data_client(&self) -> GameDataGrpcClient {
@@ -394,25 +405,92 @@ mod infra_repository_impls {
     }
 }
 
+// Continuous profiling agent (pyroscope-rs).
+//
+// Pushes pprof CPU profiles to a Pyroscope server while the returned guard is
+// alive. Disabled at runtime when `PYROSCOPE_SERVER_ADDRESS` is not set so the
+// binary remains usable in environments without a profiler endpoint.
+mod profiler {
+    use pyroscope::backend::{BackendConfig, PprofConfig, pprof_backend};
+    use pyroscope::pyroscope::PyroscopeAgentBuilder;
+
+    pub struct Guard {
+        shutdown: Option<Box<dyn FnOnce() + Send>>,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if let Some(f) = self.shutdown.take() {
+                f();
+            }
+        }
+    }
+
+    pub fn try_start() -> anyhow::Result<Guard> {
+        let Ok(server_address) = std::env::var("PYROSCOPE_SERVER_ADDRESS") else {
+            tracing::info!("PYROSCOPE_SERVER_ADDRESS unset; continuous profiler disabled");
+            return Ok(Guard { shutdown: None });
+        };
+
+        let app_name = std::env::var("PYROSCOPE_APPLICATION_NAME")
+            .unwrap_or_else(|_| env!("CARGO_PKG_NAME").to_string());
+        let sample_rate: u32 = std::env::var("PYROSCOPE_SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(100);
+
+        let agent = PyroscopeAgentBuilder::new(
+            &server_address,
+            &app_name,
+            sample_rate,
+            "pyroscope-rs",
+            env!("CARGO_PKG_VERSION"),
+            pprof_backend(PprofConfig::default(), BackendConfig::default()),
+        )
+        .build()?;
+        let running = agent.start()?;
+        tracing::info!(
+            server = %server_address,
+            application = %app_name,
+            sample_rate = sample_rate,
+            "continuous profiler started"
+        );
+
+        Ok(Guard {
+            shutdown: Some(Box::new(move || match running.stop() {
+                Ok(ready) => ready.shutdown(),
+                Err(e) => eprintln!("pyroscope agent stop failed: {e}"),
+            })),
+        })
+    }
+}
+
 mod app {
     use crate::infra_axum_handlers;
     use crate::infra_axum_handlers::SharedAppState;
     use crate::infra_repository_impls;
+    use crate::profiler;
     use axum::Router;
+    use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
     use std::sync::Arc;
-    use tower_http::trace::TraceLayer;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
 
     pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
-        // initialize tracing
-        // see https://github.com/tokio-rs/axum/blob/79a0a54bc9f0f585c974b5e6793541baff980662/examples/tracing-aka-logging/src/main.rs
-        tracing_subscriber::registry()
-            .with(tracing_subscriber::EnvFilter::new(
-                std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
-            ))
-            .with(tracing_subscriber::fmt::layer())
-            .init();
+        // OpenTelemetry pipeline: traces + metrics over OTLP, plus JSON logs to
+        // stdout (picked up by the cluster's log scraper). Configuration is
+        // taken from `OTEL_*` environment variables (OTEL_SERVICE_NAME,
+        // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...).
+        // Without those vars only the stdout sink is active, so local runs do
+        // not require an OTLP collector.
+        let _otel_guard = init_tracing_opentelemetry::TracingConfig::default()
+            .with_json_format()
+            .with_stdout()
+            .with_log_directives(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
+            .with_otel(true)
+            .with_metrics(true)
+            .with_logs(true)
+            .init_subscriber()?;
+
+        let _profiler_guard = profiler::try_start()?;
 
         let shared_state = {
             let client_config = infra_repository_impls::config::GrpcClient::from_env()?;
@@ -429,7 +507,8 @@ mod app {
 
         let routes: Router = Router::new()
             .route("/metrics", infra_axum_handlers::handle_get_metrics())
-            .layer(TraceLayer::new_for_http())
+            .layer(OtelInResponseLayer)
+            .layer(OtelAxumLayer::default())
             .with_state(shared_state.clone());
 
         let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 80));
