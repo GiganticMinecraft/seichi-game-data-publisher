@@ -486,7 +486,6 @@ mod app {
             .with_log_directives(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
             .with_otel(true)
             .with_metrics(true)
-            .with_logs(true)
             .init_subscriber()?;
 
         let _profiler_guard = profiler::try_start()?;
