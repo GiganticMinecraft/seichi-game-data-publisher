@@ -92,7 +92,7 @@ mod use_cases {
     }
 
     impl GetAllPlayerDataUseCase {
-        #[tracing::instrument]
+        #[tracing::instrument(skip(self))]
         pub async fn get_all_known_aggregated_player_data(
             &self,
         ) -> anyhow::Result<KnownAggregatedPlayerData> {
@@ -170,7 +170,7 @@ mod infra_axum_handlers {
             ))?)
         }
 
-        #[tracing::instrument]
+        #[tracing::instrument(skip(data), fields(player_count = data.0.len()))]
         pub fn present_player_data_as_prometheus_metrics(
             data: &KnownAggregatedPlayerData,
         ) -> anyhow::Result<String> {
@@ -201,7 +201,7 @@ mod infra_axum_handlers {
     /// Handler for the `GET /metrics` endpoint.
     pub fn handle_get_metrics() -> MethodRouter<SharedAppState> {
         // we need a separate handler function to create an error tracing span
-        #[tracing::instrument]
+        #[tracing::instrument(skip(state))]
         async fn handle_request(state: &SharedAppState) -> Response {
             let use_case = GetAllPlayerDataUseCase {
                 repository: state.repository.clone(),
@@ -314,7 +314,7 @@ mod infra_repository_impls {
     }
 
     impl GameDataGrpcRepository {
-        #[tracing::instrument]
+        #[tracing::instrument(skip(config), fields(endpoint = %config.game_data_server_grpc_endpoint_url))]
         pub async fn initialize_connections_with(
             config: config::GrpcClient,
         ) -> anyhow::Result<Self> {
@@ -345,7 +345,7 @@ mod infra_repository_impls {
 
     #[async_trait::async_trait]
     impl crate::domain::PlayerDataRepository for GameDataGrpcRepository {
-        #[tracing::instrument]
+        #[tracing::instrument(skip(self))]
         async fn get_all_break_counts(&self) -> anyhow::Result<Vec<PlayerBreakCount>> {
             Ok(self
                 .game_data_client()
@@ -358,7 +358,7 @@ mod infra_repository_impls {
                 .collect::<Result<_, _>>()?)
         }
 
-        #[tracing::instrument]
+        #[tracing::instrument(skip(self))]
         async fn get_all_build_counts(&self) -> anyhow::Result<Vec<PlayerBuildCount>> {
             Ok(self
                 .game_data_client()
@@ -371,7 +371,7 @@ mod infra_repository_impls {
                 .collect::<Result<_, _>>()?)
         }
 
-        #[tracing::instrument]
+        #[tracing::instrument(skip(self))]
         async fn get_all_play_ticks(&self) -> anyhow::Result<Vec<PlayerPlayTicks>> {
             Ok(self
                 .game_data_client()
@@ -384,7 +384,7 @@ mod infra_repository_impls {
                 .collect::<Result<_, _>>()?)
         }
 
-        #[tracing::instrument]
+        #[tracing::instrument(skip(self))]
         async fn get_all_vote_counts(&self) -> anyhow::Result<Vec<PlayerVoteCount>> {
             Ok(self
                 .game_data_client()
