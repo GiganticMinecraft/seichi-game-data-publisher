@@ -465,7 +465,7 @@ mod app {
     use crate::infra_repository_impls;
     use crate::profiler;
     use axum::Router;
-    use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
+    use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
     use std::sync::Arc;
 
     pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -500,7 +500,6 @@ mod app {
 
         let routes: Router = Router::new()
             .route("/metrics", infra_axum_handlers::handle_get_metrics())
-            .layer(OtelInResponseLayer)
             .layer(OtelAxumLayer::default())
             .with_state(shared_state.clone());
 
