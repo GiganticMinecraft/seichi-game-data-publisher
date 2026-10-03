@@ -158,21 +158,21 @@ dependencies = [
 
 [[package]]
 name = "axum-tracing-opentelemetry"
-version = "0.38.0"
+version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c938150bbecf4b43a24964bea0780f99d538b6654455e45b1784d410f122822"
+checksum = "dd1e475bed6452c71b4014de57e762f39f3c5fb28286504cc8e64ebcf54a2622"
 dependencies = [
  "axum",
  "futures-core",
  "futures-util",
  "http",
- "opentelemetry 0.32.0",
- "opentelemetry-semantic-conventions 0.32.0",
+ "opentelemetry 0.33.0",
+ "opentelemetry-semantic-conventions 0.33.0",
  "pin-project-lite",
  "tower",
  "tracing",
- "tracing-opentelemetry 0.33.0",
- "tracing-opentelemetry-instrumentation-sdk 0.38.0",
+ "tracing-opentelemetry 0.34.0",
+ "tracing-opentelemetry-instrumentation-sdk",
 ]
 
 [[package]]
@@ -371,7 +371,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1789,7 +1789,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1847,7 +1847,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2188,7 +2188,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2365,7 +2365,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-opentelemetry 0.34.0",
- "tracing-opentelemetry-instrumentation-sdk 0.42.1",
+ "tracing-opentelemetry-instrumentation-sdk",
 ]
 
 [[package]]
@@ -2519,19 +2519,6 @@ dependencies = [
  "tracing-log",
  "tracing-subscriber",
  "web-time",
-]
-
-[[package]]
-name = "tracing-opentelemetry-instrumentation-sdk"
-version = "0.38.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b7bd1956e9850c5d6b73ae8a8d651987e0140bb048341c1188171e116266567"
-dependencies = [
- "http",
- "opentelemetry 0.32.0",
- "opentelemetry-semantic-conventions 0.32.0",
- "tracing",
- "tracing-opentelemetry 0.33.0",
 ]
 
 [[package]]
@@ -2835,7 +2822,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
