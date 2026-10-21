@@ -480,10 +480,19 @@ mod app {
     use std::future::IntoFuture;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{signal, Signal, SignalKind};
     use tokio::sync::Notify;
 
     pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        // The binary runs as PID 1 in a distroless image, so SIGTERM has no
+        // default action: without a handler the pod is only stopped by the
+        // SIGKILL at the end of terminationGracePeriodSeconds, and the
+        // telemetry guards below never get a chance to flush. Register the
+        // handlers before anything else so that a pod terminated during
+        // startup is not left ignoring SIGTERM.
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
         // OpenTelemetry pipeline: traces + metrics over OTLP, plus JSON logs to
         // stdout (picked up by the cluster's log scraper). Configuration is
         // taken from `OTEL_*` environment variables (OTEL_SERVICE_NAME,
@@ -522,10 +531,6 @@ mod app {
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
 
-        // The binary runs as PID 1 in a distroless image, so SIGTERM has no
-        // default action: without a handler the pod is only stopped by the
-        // SIGKILL at the end of terminationGracePeriodSeconds, and the
-        // telemetry guards below never get a chance to flush.
         let shutdown = Arc::new(Notify::new());
         let server = axum::serve(listener, routes)
             .with_graceful_shutdown({
@@ -537,8 +542,13 @@ mod app {
 
         tokio::select! {
             result = &mut server => result?,
-            () = shutdown_signal() => {
-                tracing::info!("shutdown signal received; draining in-flight requests");
+            signal = wait_for_shutdown_signal(&mut sigterm, &mut sigint) => {
+                tracing::info!(signal, "shutdown signal received");
+                // Keep serving for a moment: the endpoint removal triggered by
+                // the pod deletion reaches kube-proxy asynchronously, so the
+                // cache-proxy may still route new connections here.
+                tokio::time::sleep(PRE_DRAIN_DELAY).await;
+                tracing::info!("draining in-flight requests");
                 // `notify_one` stores a permit, so this is not lost even if the
                 // server has not polled the shutdown future yet.
                 shutdown.notify_one();
@@ -555,7 +565,9 @@ mod app {
             }
         }
 
-        // Flush traces/logs/metrics first, then stop the profiler.
+        // Flush traces/logs/metrics first, then stop the profiler. Only the
+        // stdout sink is left after the OTel guard is dropped, so the final
+        // log line below does not reach the OTLP log pipeline.
         tracing::info!("flushing telemetry");
         drop(otel_guard);
         drop(profiler_guard);
@@ -564,25 +576,20 @@ mod app {
         Ok(())
     }
 
-    /// Upper bound for draining in-flight requests after a shutdown signal.
-    const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
+    /// How long to keep accepting connections after a shutdown signal, so that
+    /// the endpoint removal can propagate before the listener is closed.
+    const PRE_DRAIN_DELAY: Duration = Duration::from_secs(5);
+    /// Upper bound for draining in-flight requests. `PRE_DRAIN_DELAY` +
+    /// `DRAIN_TIMEOUT` is kept well below the default 30s grace period to
+    /// leave time for the telemetry flush.
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
 
-    /// Resolves when SIGTERM (sent by Kubernetes on pod termination) or
-    /// SIGINT (Ctrl+C in local runs) is received.
-    async fn shutdown_signal() {
-        let mut sigterm = match signal(SignalKind::terminate()) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!("failed to install SIGTERM handler: {e}");
-                // Fall back to Ctrl+C only.
-                let _ = tokio::signal::ctrl_c().await;
-                return;
-            }
-        };
-
+    /// Resolves with the signal name when SIGTERM (sent by Kubernetes on pod
+    /// termination) or SIGINT (Ctrl+C in local runs) is received.
+    async fn wait_for_shutdown_signal(sigterm: &mut Signal, sigint: &mut Signal) -> &'static str {
         tokio::select! {
-            _ = sigterm.recv() => {},
-            _ = tokio::signal::ctrl_c() => {},
+            _ = sigterm.recv() => "SIGTERM",
+            _ = sigint.recv() => "SIGINT",
         }
     }
 }
