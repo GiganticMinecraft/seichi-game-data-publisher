@@ -308,6 +308,13 @@ mod infra_repository_impls {
     use tower::Layer;
     type GameDataGrpcClient = ReadServiceClient<OtelGrpcService<tonic::transport::Channel>>;
 
+    /// Upper bound for establishing a TCP/HTTP2 connection to the upstream.
+    const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+    /// Upper bound for a single RPC. Must stay below the cache-proxy nginx
+    /// `proxy_read_timeout` (nginx default: 60s) so that the proxy receives our
+    /// error response instead of timing out on its own.
+    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
     #[derive(Debug)]
     pub struct GameDataGrpcRepository {
         client: GameDataGrpcClient,
@@ -315,16 +322,20 @@ mod infra_repository_impls {
 
     impl GameDataGrpcRepository {
         #[tracing::instrument(skip(config), fields(endpoint = %config.game_data_server_grpc_endpoint_url))]
-        pub async fn initialize_connections_with(
-            config: config::GrpcClient,
-        ) -> anyhow::Result<Self> {
+        pub fn initialize_connections_with(config: config::GrpcClient) -> anyhow::Result<Self> {
             // Build the channel manually so we can wrap it with the OTel gRPC
             // layer; the layer injects the W3C trace context into outgoing
             // requests and creates a span per RPC call.
+            //
+            // The channel connects lazily so that the publisher can start (and
+            // keep running) while the upstream game data server is down;
+            // requests made in the meantime fail fast with an error response
+            // instead of crash-looping the whole process.
             let channel =
                 tonic::transport::Channel::from_shared(config.game_data_server_grpc_endpoint_url)?
-                    .connect()
-                    .await?;
+                    .connect_timeout(CONNECT_TIMEOUT)
+                    .timeout(REQUEST_TIMEOUT)
+                    .connect_lazy();
             let channel = OtelGrpcLayer.layer(channel);
 
             Ok(Self {
@@ -466,16 +477,29 @@ mod app {
     use crate::profiler;
     use axum::Router;
     use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
+    use std::future::IntoFuture;
     use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::signal::unix::{signal, Signal, SignalKind};
+    use tokio::sync::Notify;
 
     pub async fn main() -> Result<(), Box<dyn std::error::Error>> {
+        // The binary runs as PID 1 in a distroless image, so SIGTERM has no
+        // default action: without a handler the pod is only stopped by the
+        // SIGKILL at the end of terminationGracePeriodSeconds, and the
+        // telemetry guards below never get a chance to flush. Register the
+        // handlers before anything else so that a pod terminated during
+        // startup is not left ignoring SIGTERM.
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+
         // OpenTelemetry pipeline: traces + metrics over OTLP, plus JSON logs to
         // stdout (picked up by the cluster's log scraper). Configuration is
         // taken from `OTEL_*` environment variables (OTEL_SERVICE_NAME,
         // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...).
         // Without those vars only the stdout sink is active, so local runs do
         // not require an OTLP collector.
-        let _otel_guard = init_tracing_opentelemetry::TracingConfig::default()
+        let otel_guard = init_tracing_opentelemetry::TracingConfig::default()
             .with_json_format()
             .with_stdout()
             .with_log_directives(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
@@ -483,15 +507,14 @@ mod app {
             .with_metrics(true)
             .init_subscriber()?;
 
-        let _profiler_guard = profiler::try_start()?;
+        let profiler_guard = profiler::try_start()?;
 
         let shared_state = {
             let client_config = infra_repository_impls::config::GrpcClient::from_env()?;
             let repository =
                 infra_repository_impls::GameDataGrpcRepository::initialize_connections_with(
                     client_config,
-                )
-                .await?;
+                )?;
 
             SharedAppState {
                 repository: Arc::new(repository),
@@ -507,7 +530,67 @@ mod app {
         tracing::info!("listening on {}", addr);
 
         let listener = tokio::net::TcpListener::bind(addr).await?;
-        Ok(axum::serve(listener, routes).await?)
+
+        let shutdown = Arc::new(Notify::new());
+        let server = axum::serve(listener, routes)
+            .with_graceful_shutdown({
+                let shutdown = shutdown.clone();
+                async move { shutdown.notified().await }
+            })
+            .into_future();
+        tokio::pin!(server);
+
+        tokio::select! {
+            result = &mut server => result?,
+            signal = wait_for_shutdown_signal(&mut sigterm, &mut sigint) => {
+                tracing::info!(signal, "shutdown signal received");
+                // Keep serving for a moment: the endpoint removal triggered by
+                // the pod deletion reaches kube-proxy asynchronously, so the
+                // cache-proxy may still route new connections here.
+                tokio::time::sleep(PRE_DRAIN_DELAY).await;
+                tracing::info!("draining in-flight requests");
+                // `notify_one` stores a permit, so this is not lost even if the
+                // server has not polled the shutdown future yet.
+                shutdown.notify_one();
+                // Bound the drain so that the telemetry flush below still runs
+                // before Kubernetes' SIGKILL (default grace period: 30s).
+                if let Ok(result) = tokio::time::timeout(DRAIN_TIMEOUT, &mut server).await {
+                    result?;
+                } else {
+                    tracing::warn!(
+                        timeout_secs = DRAIN_TIMEOUT.as_secs(),
+                        "in-flight requests did not finish in time; shutting down anyway"
+                    );
+                }
+            }
+        }
+
+        // Flush traces/logs/metrics first, then stop the profiler. Only the
+        // stdout sink is left after the OTel guard is dropped, so the final
+        // log line below does not reach the OTLP log pipeline.
+        tracing::info!("flushing telemetry");
+        drop(otel_guard);
+        drop(profiler_guard);
+        tracing::info!("shutdown complete");
+
+        Ok(())
+    }
+
+    /// How long to keep accepting connections after a shutdown signal, so that
+    /// the endpoint removal can propagate before the listener is closed.
+    const PRE_DRAIN_DELAY: Duration = Duration::from_secs(5);
+    /// Upper bound for draining in-flight requests. `PRE_DRAIN_DELAY` +
+    /// `DRAIN_TIMEOUT` is kept well below the default 30s grace period to
+    /// leave time for the telemetry flush.
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(15);
+
+    /// Resolves with the signal name when SIGTERM (sent by Kubernetes on pod
+    /// termination) or SIGINT (Ctrl+C in local runs) is received.
+    async fn wait_for_shutdown_signal(sigterm: &mut Signal, sigint: &mut Signal) -> &'static str {
+        tokio::select! {
+            _ = sigterm.recv() => "SIGTERM",
+            _ = sigint.recv() => "SIGINT",
+        }
     }
 }
 
