@@ -493,12 +493,20 @@ mod telemetry_metrics {
     use std::time::Instant;
 
     /// Histogram bucket boundaries in seconds: the ones advised by the
-    /// semantic conventions for `http.server.request.duration`, plus 30s so
-    /// that calls running into the upstream `REQUEST_TIMEOUT` still fall into
-    /// a finite bucket.
-    const DURATION_BUCKETS_SECONDS: [f64; 15] = [
-        0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 30.0,
+    /// semantic conventions for `http.server.request.duration`, extended with
+    /// 30s and 60s. Calls cut off by the upstream `REQUEST_TIMEOUT` (30s) end
+    /// slightly after 30s and so fall into the (30, 60] bucket instead of +Inf.
+    const DURATION_BUCKETS_SECONDS: [f64; 16] = [
+        0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 30.0, 60.0,
     ];
+
+    /// `error.type` for a request or call whose future was dropped before it
+    /// completed: an HTTP request abandoned by the client (or cut off by the
+    /// shutdown drain timeout), or an RPC abandoned by this process because
+    /// `tokio::try_join!` gave up after a sibling call failed. Kept apart from
+    /// the status codes so that error-ratio queries can tell these collateral
+    /// cancellations from failures of the call itself.
+    const ERROR_TYPE_ABANDONED: &str = "abandoned";
 
     struct Instruments {
         http_server_request_duration: Histogram<f64>,
@@ -543,34 +551,55 @@ mod telemetry_metrics {
         }
     }
 
+    /// Records `http.server.request.duration` when dropped, so that requests
+    /// whose handler future is dropped before completion are recorded too.
+    struct HttpRequestRecorder {
+        start: Instant,
+        method: &'static str,
+        /// Absent for requests that did not match any route (404), which
+        /// keeps unknown paths out of the attribute values.
+        route: Option<String>,
+        /// `None` while the request is in flight.
+        status: Option<axum::http::StatusCode>,
+    }
+
+    impl Drop for HttpRequestRecorder {
+        fn drop(&mut self) {
+            let mut attributes = vec![KeyValue::new("http.request.method", self.method)];
+            if let Some(route) = self.route.take() {
+                attributes.push(KeyValue::new("http.route", route));
+            }
+            match self.status {
+                Some(status) => {
+                    attributes.push(KeyValue::new(
+                        "http.response.status_code",
+                        i64::from(status.as_u16()),
+                    ));
+                    if status.is_server_error() {
+                        attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
+                    }
+                }
+                None => attributes.push(KeyValue::new("error.type", ERROR_TYPE_ABANDONED)),
+            }
+            INSTRUMENTS
+                .http_server_request_duration
+                .record(self.start.elapsed().as_secs_f64(), &attributes);
+        }
+    }
+
     /// axum middleware recording `http.server.request.duration`.
     pub async fn record_http_server_request_duration(request: Request, next: Next) -> Response {
-        let start = Instant::now();
-        let method = http_method_attribute(request.method());
-        // Absent for requests that did not match any route (404), which keeps
-        // unknown paths out of the attribute values.
-        let route = request
-            .extensions()
-            .get::<MatchedPath>()
-            .map(|path| path.as_str().to_owned());
-
+        let mut recorder = HttpRequestRecorder {
+            start: Instant::now(),
+            method: http_method_attribute(request.method()),
+            route: request
+                .extensions()
+                .get::<MatchedPath>()
+                .map(|path| path.as_str().to_owned()),
+            status: None,
+        };
         let response = next.run(request).await;
-
-        let status = response.status();
-        let mut attributes = vec![
-            KeyValue::new("http.request.method", method),
-            KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
-        ];
-        if let Some(route) = route {
-            attributes.push(KeyValue::new("http.route", route));
-        }
-        if status.is_server_error() {
-            attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
-        }
-        INSTRUMENTS
-            .http_server_request_duration
-            .record(start.elapsed().as_secs_f64(), &attributes);
-
+        recorder.status = Some(response.status());
         response
     }
 
@@ -597,9 +626,24 @@ mod telemetry_metrics {
         }
     }
 
+    /// Status code reported for a failed call.
+    ///
+    /// tonic turns the expiry of the channel's request timeout into a
+    /// `CANCELLED` status (with `TimeoutExpired`'s message), which would look
+    /// like a cancellation. Report it as `DEADLINE_EXCEEDED`, which is what the
+    /// call actually ran into.
+    fn rpc_error_code(status: &tonic::Status) -> tonic::Code {
+        if status.code() == tonic::Code::Cancelled
+            && status.message() == tonic::TimeoutExpired(()).to_string()
+        {
+            tonic::Code::DeadlineExceeded
+        } else {
+            status.code()
+        }
+    }
+
     /// Records `rpc.client.call.duration` when dropped, so that calls whose
-    /// future is dropped before completion are recorded as well (e.g. the
-    /// sibling calls `tokio::try_join!` abandons once one of them fails).
+    /// future is dropped before completion are recorded as well.
     struct RpcCallRecorder {
         method: &'static str,
         start: Instant,
@@ -609,15 +653,19 @@ mod telemetry_metrics {
 
     impl Drop for RpcCallRecorder {
         fn drop(&mut self) {
-            // A call dropped before completion was cancelled by this client.
-            let code = grpc_status_code_name(self.status_code.unwrap_or(tonic::Code::Cancelled));
             let mut attributes = vec![
                 KeyValue::new("rpc.system.name", "grpc"),
                 KeyValue::new("rpc.method", self.method),
-                KeyValue::new("rpc.response.status_code", code),
             ];
-            if self.status_code != Some(tonic::Code::Ok) {
-                attributes.push(KeyValue::new("error.type", code));
+            match self.status_code {
+                Some(code) => {
+                    let name = grpc_status_code_name(code);
+                    attributes.push(KeyValue::new("rpc.response.status_code", name));
+                    if code != tonic::Code::Ok {
+                        attributes.push(KeyValue::new("error.type", name));
+                    }
+                }
+                None => attributes.push(KeyValue::new("error.type", ERROR_TYPE_ABANDONED)),
             }
             INSTRUMENTS
                 .rpc_client_call_duration
@@ -627,9 +675,11 @@ mod telemetry_metrics {
 
     /// Awaits a unary gRPC call and records `rpc.client.call.duration`.
     ///
-    /// `method` is the fully-qualified `package.Service/Method` name. The
-    /// future of a unary tonic call resolves once the response message has been
-    /// received and decoded, so the recorded duration covers the whole call.
+    /// `method` is the fully-qualified `package.Service/Method` name. This
+    /// wraps the call future rather than the channel because the future of a
+    /// unary tonic call resolves only once the response message has been
+    /// received and decoded, whereas a layer on the channel would stop the
+    /// clock at the response headers, before the (large) body is transferred.
     pub async fn record_rpc_client_call<T>(
         method: &'static str,
         call: impl Future<Output = Result<T, tonic::Status>>,
@@ -642,7 +692,7 @@ mod telemetry_metrics {
         let result = call.await;
         recorder.status_code = Some(match &result {
             Ok(_) => tonic::Code::Ok,
-            Err(status) => status.code(),
+            Err(status) => rpc_error_code(status),
         });
         result
     }
@@ -665,6 +715,17 @@ mod telemetry_metrics {
         }
 
         #[test]
+        fn request_timeouts_are_reported_as_deadline_exceeded() {
+            // Built the same way tonic's channel converts its timeout error.
+            let timeout = tonic::Status::from_error(Box::new(tonic::TimeoutExpired(())));
+            assert_eq!(timeout.code(), tonic::Code::Cancelled);
+            assert_eq!(rpc_error_code(&timeout), tonic::Code::DeadlineExceeded);
+
+            let cancelled = tonic::Status::cancelled("cancelled by the server");
+            assert_eq!(rpc_error_code(&cancelled), tonic::Code::Cancelled);
+        }
+
+        #[test]
         fn unknown_http_methods_are_reported_as_other() {
             assert_eq!(http_method_attribute(&Method::GET), "GET");
             assert_eq!(
@@ -683,6 +744,7 @@ mod app {
     use crate::telemetry_metrics;
     use axum::Router;
     use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
+    use init_tracing_opentelemetry::resource::DetectResource;
     use init_tracing_opentelemetry::FmtTraceContext;
     use std::future::IntoFuture;
     use std::sync::Arc;
@@ -703,21 +765,26 @@ mod app {
         // OpenTelemetry pipeline: traces + metrics over OTLP, plus JSON logs to
         // stdout (picked up by the cluster's log scraper). Configuration is
         // taken from `OTEL_*` environment variables (OTEL_SERVICE_NAME,
-        // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...);
-        // `service.version` comes from `SERVICE_VERSION`, which the image sets
-        // to the git commit it was built from. Without the OTLP vars only the
-        // stdout sink is active, so local runs do not require a collector.
+        // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...).
+        // Without the OTLP vars only the stdout sink is active, so local runs
+        // do not require a collector.
         //
         // Logs are deliberately not exported over OTLP: the stdout lines are
         // already ingested by the log scraper, so exporting them as well would
         // store every line twice. Instead each line logged inside a span
         // carries `trace_id` / `span_id` fields for log <-> trace correlation.
+        // The `logs` feature is not enabled in Cargo.toml either;
+        // `with_logs(false)` keeps the export off even if another dependency
+        // turns that feature on through feature unification.
         let otel_guard = init_tracing_opentelemetry::TracingConfig::default()
             .with_json_format()
             .with_stdout()
             .with_fmt_trace_context(FmtTraceContext::TraceIdSpanId)
             .with_log_directives(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
             .with_otel(true)
+            .with_resource_config(
+                DetectResource::default().with_fallback_service_version(service_version()),
+            )
             .with_logs(false)
             .with_metrics(true)
             .init_subscriber()?;
@@ -790,6 +857,15 @@ mod app {
         tracing::info!("shutdown complete");
 
         Ok(())
+    }
+
+    /// Default for the `service.version` resource attribute: the git commit
+    /// passed as `GIT_SHA` at build time (CI sets it), or the crate version
+    /// for local builds. A `SERVICE_VERSION` env var still takes precedence.
+    fn service_version() -> &'static str {
+        option_env!("GIT_SHA")
+            .filter(|sha| !sha.is_empty())
+            .unwrap_or(env!("CARGO_PKG_VERSION"))
     }
 
     /// How long to keep accepting connections after a shutdown signal, so that

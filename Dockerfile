@@ -25,14 +25,13 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Build application
 COPY --link . .
+# Compiled in as the default OpenTelemetry `service.version` (see
+# `service_version()` in main.rs). CI passes the commit SHA; declared after the
+# dependency build so that it does not invalidate that cache.
+ARG GIT_SHA
 RUN cargo build --release
 
 FROM gcr.io/distroless/cc
 LABEL org.opencontainers.image.source=https://github.com/GiganticMinecraft/seichi-game-data-publisher
 COPY --from=build-env --link /app/target/release/seichi-game-data-publisher /
-# Reported as the OpenTelemetry `service.version` resource attribute. Declared
-# in the final stage only so that a new commit does not invalidate the build
-# cache of the stages above. CI passes the commit SHA.
-ARG GIT_SHA=unknown
-ENV SERVICE_VERSION=${GIT_SHA}
 CMD ["./seichi-game-data-publisher"]

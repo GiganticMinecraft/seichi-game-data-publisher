@@ -98,7 +98,7 @@ jobs:
           push: ${{ github.ref == 'refs/heads/master' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Becomes SERVICE_VERSION (the OTel `service.version`) in the image
+          # Compiled in as the default OTel `service.version`
           build-args: |
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha
