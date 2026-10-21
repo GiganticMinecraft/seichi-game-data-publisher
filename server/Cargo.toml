@@ -12,7 +12,7 @@ axum = "0.8.0"
 async-trait = "0.1.68"
 pbjson-types = "0.9.0"
 prost = "0.14.0"
-tokio = { version = "1.32.0", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.32.0", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
 tonic = { version = "0.14.0", features = ["gzip"] }
 tonic-prost = "0.14.0"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
