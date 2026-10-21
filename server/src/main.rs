@@ -353,59 +353,64 @@ mod infra_repository_impls {
     }
 
     use crate::domain::{PlayerBreakCount, PlayerBuildCount, PlayerPlayTicks, PlayerVoteCount};
+    use crate::telemetry_metrics::record_rpc_client_call;
 
     #[async_trait::async_trait]
     impl crate::domain::PlayerDataRepository for GameDataGrpcRepository {
         #[tracing::instrument(skip(self))]
         async fn get_all_break_counts(&self) -> anyhow::Result<Vec<PlayerBreakCount>> {
-            Ok(self
-                .game_data_client()
-                .break_counts(empty_request())
-                .await?
-                .into_inner()
-                .results
-                .into_iter()
-                .map(buf_generated_to_domain::try_into_domain_player_break_count)
-                .collect::<Result<_, _>>()?)
+            Ok(record_rpc_client_call(
+                "gigantic_minecraft.seichi_game_data.v1.ReadService/BreakCounts",
+                self.game_data_client().break_counts(empty_request()),
+            )
+            .await?
+            .into_inner()
+            .results
+            .into_iter()
+            .map(buf_generated_to_domain::try_into_domain_player_break_count)
+            .collect::<Result<_, _>>()?)
         }
 
         #[tracing::instrument(skip(self))]
         async fn get_all_build_counts(&self) -> anyhow::Result<Vec<PlayerBuildCount>> {
-            Ok(self
-                .game_data_client()
-                .build_counts(empty_request())
-                .await?
-                .into_inner()
-                .results
-                .into_iter()
-                .map(buf_generated_to_domain::try_into_domain_player_build_count)
-                .collect::<Result<_, _>>()?)
+            Ok(record_rpc_client_call(
+                "gigantic_minecraft.seichi_game_data.v1.ReadService/BuildCounts",
+                self.game_data_client().build_counts(empty_request()),
+            )
+            .await?
+            .into_inner()
+            .results
+            .into_iter()
+            .map(buf_generated_to_domain::try_into_domain_player_build_count)
+            .collect::<Result<_, _>>()?)
         }
 
         #[tracing::instrument(skip(self))]
         async fn get_all_play_ticks(&self) -> anyhow::Result<Vec<PlayerPlayTicks>> {
-            Ok(self
-                .game_data_client()
-                .play_ticks(empty_request())
-                .await?
-                .into_inner()
-                .results
-                .into_iter()
-                .map(buf_generated_to_domain::try_into_domain_player_play_ticks)
-                .collect::<Result<_, _>>()?)
+            Ok(record_rpc_client_call(
+                "gigantic_minecraft.seichi_game_data.v1.ReadService/PlayTicks",
+                self.game_data_client().play_ticks(empty_request()),
+            )
+            .await?
+            .into_inner()
+            .results
+            .into_iter()
+            .map(buf_generated_to_domain::try_into_domain_player_play_ticks)
+            .collect::<Result<_, _>>()?)
         }
 
         #[tracing::instrument(skip(self))]
         async fn get_all_vote_counts(&self) -> anyhow::Result<Vec<PlayerVoteCount>> {
-            Ok(self
-                .game_data_client()
-                .vote_counts(empty_request())
-                .await?
-                .into_inner()
-                .results
-                .into_iter()
-                .map(buf_generated_to_domain::try_into_domain_player_vote_count)
-                .collect::<Result<_, _>>()?)
+            Ok(record_rpc_client_call(
+                "gigantic_minecraft.seichi_game_data.v1.ReadService/VoteCounts",
+                self.game_data_client().vote_counts(empty_request()),
+            )
+            .await?
+            .into_inner()
+            .results
+            .into_iter()
+            .map(buf_generated_to_domain::try_into_domain_player_vote_count)
+            .collect::<Result<_, _>>()?)
         }
     }
 }
@@ -470,13 +475,215 @@ mod profiler {
     }
 }
 
+// Application-level OpenTelemetry metrics.
+//
+// Recorded through the global meter provider that init-tracing-opentelemetry
+// installs, and pushed over OTLP together with the traces. Names, units and
+// attributes follow the OpenTelemetry semantic conventions. These are
+// unrelated to the `GET /metrics` endpoint, which serves player data.
+mod telemetry_metrics {
+    use axum::extract::{MatchedPath, Request};
+    use axum::http::Method;
+    use axum::middleware::Next;
+    use axum::response::Response;
+    use opentelemetry::metrics::Histogram;
+    use opentelemetry::KeyValue;
+    use std::future::Future;
+    use std::sync::LazyLock;
+    use std::time::Instant;
+
+    /// Histogram bucket boundaries in seconds: the ones advised by the
+    /// semantic conventions for `http.server.request.duration`, plus 30s so
+    /// that calls running into the upstream `REQUEST_TIMEOUT` still fall into
+    /// a finite bucket.
+    const DURATION_BUCKETS_SECONDS: [f64; 15] = [
+        0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, 30.0,
+    ];
+
+    struct Instruments {
+        http_server_request_duration: Histogram<f64>,
+        rpc_client_call_duration: Histogram<f64>,
+    }
+
+    /// Created on first use, which is after `init_subscriber` has installed the
+    /// global meter provider. Instruments obtained from the default no-op
+    /// provider before that would never be exported.
+    static INSTRUMENTS: LazyLock<Instruments> = LazyLock::new(|| {
+        let meter = opentelemetry::global::meter(env!("CARGO_PKG_NAME"));
+        Instruments {
+            http_server_request_duration: meter
+                .f64_histogram("http.server.request.duration")
+                .with_unit("s")
+                .with_description("Duration of HTTP server requests.")
+                .with_boundaries(DURATION_BUCKETS_SECONDS.to_vec())
+                .build(),
+            rpc_client_call_duration: meter
+                .f64_histogram("rpc.client.call.duration")
+                .with_unit("s")
+                .with_description("Duration of outgoing RPC calls.")
+                .with_boundaries(DURATION_BUCKETS_SECONDS.to_vec())
+                .build(),
+        }
+    });
+
+    /// `http.request.method` value: the known methods as-is, anything else as
+    /// `_OTHER` so that arbitrary client input cannot inflate cardinality.
+    const fn http_method_attribute(method: &Method) -> &'static str {
+        match *method {
+            Method::GET => "GET",
+            Method::HEAD => "HEAD",
+            Method::POST => "POST",
+            Method::PUT => "PUT",
+            Method::DELETE => "DELETE",
+            Method::CONNECT => "CONNECT",
+            Method::OPTIONS => "OPTIONS",
+            Method::TRACE => "TRACE",
+            Method::PATCH => "PATCH",
+            _ => "_OTHER",
+        }
+    }
+
+    /// axum middleware recording `http.server.request.duration`.
+    pub async fn record_http_server_request_duration(request: Request, next: Next) -> Response {
+        let start = Instant::now();
+        let method = http_method_attribute(request.method());
+        // Absent for requests that did not match any route (404), which keeps
+        // unknown paths out of the attribute values.
+        let route = request
+            .extensions()
+            .get::<MatchedPath>()
+            .map(|path| path.as_str().to_owned());
+
+        let response = next.run(request).await;
+
+        let status = response.status();
+        let mut attributes = vec![
+            KeyValue::new("http.request.method", method),
+            KeyValue::new("http.response.status_code", i64::from(status.as_u16())),
+        ];
+        if let Some(route) = route {
+            attributes.push(KeyValue::new("http.route", route));
+        }
+        if status.is_server_error() {
+            attributes.push(KeyValue::new("error.type", status.as_str().to_owned()));
+        }
+        INSTRUMENTS
+            .http_server_request_duration
+            .record(start.elapsed().as_secs_f64(), &attributes);
+
+        response
+    }
+
+    /// Canonical gRPC status code name, as used for `rpc.response.status_code`.
+    pub const fn grpc_status_code_name(code: tonic::Code) -> &'static str {
+        match code {
+            tonic::Code::Ok => "OK",
+            tonic::Code::Cancelled => "CANCELLED",
+            tonic::Code::Unknown => "UNKNOWN",
+            tonic::Code::InvalidArgument => "INVALID_ARGUMENT",
+            tonic::Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+            tonic::Code::NotFound => "NOT_FOUND",
+            tonic::Code::AlreadyExists => "ALREADY_EXISTS",
+            tonic::Code::PermissionDenied => "PERMISSION_DENIED",
+            tonic::Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+            tonic::Code::FailedPrecondition => "FAILED_PRECONDITION",
+            tonic::Code::Aborted => "ABORTED",
+            tonic::Code::OutOfRange => "OUT_OF_RANGE",
+            tonic::Code::Unimplemented => "UNIMPLEMENTED",
+            tonic::Code::Internal => "INTERNAL",
+            tonic::Code::Unavailable => "UNAVAILABLE",
+            tonic::Code::DataLoss => "DATA_LOSS",
+            tonic::Code::Unauthenticated => "UNAUTHENTICATED",
+        }
+    }
+
+    /// Records `rpc.client.call.duration` when dropped, so that calls whose
+    /// future is dropped before completion are recorded as well (e.g. the
+    /// sibling calls `tokio::try_join!` abandons once one of them fails).
+    struct RpcCallRecorder {
+        method: &'static str,
+        start: Instant,
+        /// `None` while the call is in flight.
+        status_code: Option<tonic::Code>,
+    }
+
+    impl Drop for RpcCallRecorder {
+        fn drop(&mut self) {
+            // A call dropped before completion was cancelled by this client.
+            let code = grpc_status_code_name(self.status_code.unwrap_or(tonic::Code::Cancelled));
+            let mut attributes = vec![
+                KeyValue::new("rpc.system.name", "grpc"),
+                KeyValue::new("rpc.method", self.method),
+                KeyValue::new("rpc.response.status_code", code),
+            ];
+            if self.status_code != Some(tonic::Code::Ok) {
+                attributes.push(KeyValue::new("error.type", code));
+            }
+            INSTRUMENTS
+                .rpc_client_call_duration
+                .record(self.start.elapsed().as_secs_f64(), &attributes);
+        }
+    }
+
+    /// Awaits a unary gRPC call and records `rpc.client.call.duration`.
+    ///
+    /// `method` is the fully-qualified `package.Service/Method` name. The
+    /// future of a unary tonic call resolves once the response message has been
+    /// received and decoded, so the recorded duration covers the whole call.
+    pub async fn record_rpc_client_call<T>(
+        method: &'static str,
+        call: impl Future<Output = Result<T, tonic::Status>>,
+    ) -> Result<T, tonic::Status> {
+        let mut recorder = RpcCallRecorder {
+            method,
+            start: Instant::now(),
+            status_code: None,
+        };
+        let result = call.await;
+        recorder.status_code = Some(match &result {
+            Ok(_) => tonic::Code::Ok,
+            Err(status) => status.code(),
+        });
+        result
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn grpc_status_code_names_follow_the_canonical_spelling() {
+            assert_eq!(grpc_status_code_name(tonic::Code::Ok), "OK");
+            assert_eq!(
+                grpc_status_code_name(tonic::Code::DeadlineExceeded),
+                "DEADLINE_EXCEEDED"
+            );
+            assert_eq!(
+                grpc_status_code_name(tonic::Code::Unavailable),
+                "UNAVAILABLE"
+            );
+        }
+
+        #[test]
+        fn unknown_http_methods_are_reported_as_other() {
+            assert_eq!(http_method_attribute(&Method::GET), "GET");
+            assert_eq!(
+                http_method_attribute(&Method::from_bytes(b"PURGE").unwrap()),
+                "_OTHER"
+            );
+        }
+    }
+}
+
 mod app {
     use crate::infra_axum_handlers;
     use crate::infra_axum_handlers::SharedAppState;
     use crate::infra_repository_impls;
     use crate::profiler;
+    use crate::telemetry_metrics;
     use axum::Router;
     use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
+    use init_tracing_opentelemetry::FmtTraceContext;
     use std::future::IntoFuture;
     use std::sync::Arc;
     use std::time::Duration;
@@ -496,14 +703,22 @@ mod app {
         // OpenTelemetry pipeline: traces + metrics over OTLP, plus JSON logs to
         // stdout (picked up by the cluster's log scraper). Configuration is
         // taken from `OTEL_*` environment variables (OTEL_SERVICE_NAME,
-        // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...).
-        // Without those vars only the stdout sink is active, so local runs do
-        // not require an OTLP collector.
+        // OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL, ...);
+        // `service.version` comes from `SERVICE_VERSION`, which the image sets
+        // to the git commit it was built from. Without the OTLP vars only the
+        // stdout sink is active, so local runs do not require a collector.
+        //
+        // Logs are deliberately not exported over OTLP: the stdout lines are
+        // already ingested by the log scraper, so exporting them as well would
+        // store every line twice. Instead each line logged inside a span
+        // carries `trace_id` / `span_id` fields for log <-> trace correlation.
         let otel_guard = init_tracing_opentelemetry::TracingConfig::default()
             .with_json_format()
             .with_stdout()
+            .with_fmt_trace_context(FmtTraceContext::TraceIdSpanId)
             .with_log_directives(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
             .with_otel(true)
+            .with_logs(false)
             .with_metrics(true)
             .init_subscriber()?;
 
@@ -523,6 +738,9 @@ mod app {
 
         let routes: Router = Router::new()
             .route("/metrics", infra_axum_handlers::handle_get_metrics())
+            .layer(axum::middleware::from_fn(
+                telemetry_metrics::record_http_server_request_duration,
+            ))
             .layer(OtelAxumLayer::default())
             .with_state(shared_state.clone());
 
@@ -565,9 +783,7 @@ mod app {
             }
         }
 
-        // Flush traces/logs/metrics first, then stop the profiler. Only the
-        // stdout sink is left after the OTel guard is dropped, so the final
-        // log line below does not reach the OTLP log pipeline.
+        // Flush traces/metrics first, then stop the profiler.
         tracing::info!("flushing telemetry");
         drop(otel_guard);
         drop(profiler_guard);
