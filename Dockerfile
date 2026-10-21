@@ -25,6 +25,10 @@ RUN cargo chef cook --release --recipe-path recipe.json
 
 # Build application
 COPY --link . .
+# Compiled in as the default OpenTelemetry `service.version` (see
+# `service_version()` in main.rs). CI passes the commit SHA; declared after the
+# dependency build so that it does not invalidate that cache.
+ARG GIT_SHA
 RUN cargo build --release
 
 FROM gcr.io/distroless/cc

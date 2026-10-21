@@ -916,7 +916,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61a291c5d51acf9f8fac7fc38716eb00f6777b9adc92efba632c20f787b59938"
 dependencies = [
  "opentelemetry",
- "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
  "opentelemetry-stdout",
@@ -1252,18 +1251,6 @@ dependencies = [
  "pin-project-lite",
  "thiserror",
  "tracing",
-]
-
-[[package]]
-name = "opentelemetry-appender-tracing"
-version = "0.33.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f01f1c53c46ce80e5fd8cb7a646f13766fd8f315a8a5b75b9bad59a08d2c5c7"
-dependencies = [
- "opentelemetry",
- "tracing",
- "tracing-core",
- "tracing-subscriber",
 ]
 
 [[package]]
